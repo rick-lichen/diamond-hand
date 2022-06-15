@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.2;
+pragma solidity 0.8.14;
 
 import "@openzeppelin/contracts/utils/Counters.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
 import "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
@@ -12,7 +11,7 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 interface IFactory {
     function DIAMONDPASS() external view returns (address);
-    function PRICE() external view returns (uint256);
+    function price() external view returns (uint256);
     function minBreakPrice() external view returns (uint256);
     function checkDiamondSpecial(address _contractAddress, uint256 _tokenId) external view returns(bool);
 }
@@ -31,9 +30,9 @@ abstract contract ERC1155Interface {
 /// @title A time-locked vault for ERC721, ERC1155, ERC20 and ETH with emergency unlock functionality. Supports withdrawal of airdropped tokens
 /// @author Momo Labs
 
-contract DiamondVault is Initializable, ReentrancyGuard, ERC721Holder, ERC1155Holder {
+contract DiamondVault is Initializable, ERC721Holder, ERC1155Holder {
     bool public isLogic;       //Only the implementation logic contract will have this as true. Will ensure base contract can't be initialized
-    address payable factoryContractAddress;     //Address of factory contract that deployed this vault
+    address payable public factoryContractAddress;     //Address of factory contract that deployed this vault
     address public vaultOwner;                  
     uint256 public vaultNumber;
     using Counters for Counters.Counter;
@@ -54,10 +53,10 @@ contract DiamondVault is Initializable, ReentrancyGuard, ERC721Holder, ERC1155Ho
     */
     struct diamondStruct {
         address contractAddress;      
+        bytes data;             
         assetType tokenType;    
         uint256[] tokenId;      
         uint256[] quantity;     
-        bytes data;             
     }
 
      /**
@@ -84,8 +83,8 @@ contract DiamondVault is Initializable, ReentrancyGuard, ERC721Holder, ERC1155Ho
     */
     struct diamondSpecialStruct {
         address contractAddress;
-        uint256 tokenId;
         assetType tokenType;
+        uint256 tokenId;
     }
     
     //MAPPINGS 
@@ -98,10 +97,10 @@ contract DiamondVault is Initializable, ReentrancyGuard, ERC721Holder, ERC1155Ho
     event DiamondHandCreated(uint256 indexed _diamondId, uint256 _currentTime, uint256 indexed _releaseTime, uint256 _breakPrice, diamondStatus _status);
     event DiamondHandBroken(uint256 indexed _diamondId, uint256 indexed _currentTime, uint256 _releaseTime, uint256 _breakPrice, diamondStatus _status);
     event DiamondHandReleased(uint256 indexed _diamondId, uint256 indexed _currentTime, uint256 _releaseTime, uint256 _breakPrice, diamondStatus _status);
-    event WithdrawnERC20(address indexed _contractAddress);
+    event WithdrawnERC20(address indexed _contractAddress, uint256 indexed amount);
     event WithdrawnERC721(address indexed _contractAddress, uint256 indexed _tokenId);
-    event WithdrawnERC1155(address indexed _contractAddress, uint256 indexed _tokenId);
-    event WithdrawnETH();
+    event WithdrawnERC1155(address indexed _contractAddress, uint256 indexed _tokenId, uint256 indexed amount);
+    event WithdrawnETH(uint256 indexed amount);
     event ReceivedEther(address indexed sender);
 
     constructor(){
@@ -144,11 +143,14 @@ contract DiamondVault is Initializable, ReentrancyGuard, ERC721Holder, ERC1155Ho
     * @param _breakPrice Price to unlock diamond-hand in case of emergency
     * @param _diamondSpecial diamondSpecialStruct, if user owns an NFT that is on the diamondSpecial list, they can createDiamondHands for free
     */
-    function createDiamondHands(diamondStruct memory _diamondAsset, uint256 _releaseTime, uint256 _breakPrice, diamondSpecialStruct memory _diamondSpecial) payable external nonReentrant onlyVaultOwner {
+    function createDiamondHands(diamondStruct memory _diamondAsset, uint256 _releaseTime, uint256 _breakPrice, diamondSpecialStruct memory _diamondSpecial) payable external onlyVaultOwner {
         require(_releaseTime > block.timestamp, "Release time in the past");
         require(_breakPrice >= getMinBreakPrice(), "Break price too low");
+        if(_diamondAsset.tokenType != assetType.ETH){
+            require(_diamondAsset.contractAddress != address(0), "Invalid contract address");
+        }
 
-        bool needsPayment = false;
+        bool needsPayment;
         if (ERC721Interface(getDiamondPassAddress()).balanceOf(msg.sender) == 0){
             //If caller does not have a diamond pass
             if (checkDiamondSpecial(_diamondSpecial.contractAddress, _diamondSpecial.tokenId)){
@@ -233,12 +235,12 @@ contract DiamondVault is Initializable, ReentrancyGuard, ERC721Holder, ERC1155Ho
     * @param _breakPrice Price to unlock diamond-hand in case of emergency
     * @param _diamondSpecial diamondSpecialStruct, if user owns an asset that is on the diamondSpecial list, they can createDiamondHands for free
     */
-    function createDiamondHandsBatch(diamondStruct[] memory _diamondAsset, uint256 _releaseTime, uint256 _breakPrice, diamondSpecialStruct memory _diamondSpecial) payable external nonReentrant {
+    function createDiamondHandsBatch(diamondStruct[] memory _diamondAsset, uint256 _releaseTime, uint256 _breakPrice, diamondSpecialStruct memory _diamondSpecial) payable external onlyVaultOwner {
         require(_releaseTime > block.timestamp, "Release time in the past");
         require(_breakPrice >= getMinBreakPrice(), "Break price too low");
         require(_diamondAsset.length > 0, "Empty diamondAsset");
 
-        bool needsPayment = false;
+        bool needsPayment;
         if (ERC721Interface(getDiamondPassAddress()).balanceOf(msg.sender) == 0){
             //If caller does not have a diamond pass
             if (checkDiamondSpecial(_diamondSpecial.contractAddress, _diamondSpecial.tokenId)){
@@ -283,6 +285,9 @@ contract DiamondVault is Initializable, ReentrancyGuard, ERC721Holder, ERC1155Ho
         
         //Transfer each asset in array into vault for storage
         for(i = 0; i < _diamondAsset.length; i++) {
+            if(_diamondAsset[i].tokenType != assetType.ETH) {
+                require(_diamondAsset[i].contractAddress != address(0), "Invalid contract address");
+            }
             if(_diamondAsset[i].tokenType == assetType.ERC721) {
                 require(_diamondAsset[i].tokenId.length == 1, "Invalid tokenId quantity");
                 currentlyDiamondHanding[keccak256(abi.encodePacked(_diamondAsset[i].contractAddress, _diamondAsset[i].tokenId[0]))] = true;
@@ -322,7 +327,7 @@ contract DiamondVault is Initializable, ReentrancyGuard, ERC721Holder, ERC1155Ho
     * @notice Release all the assets inside a specific diamondHand order (matched by _diamondId) if unlock time has passed
     * @param _diamondId Corresponding ID for the diamond-hand order 
     */
-    function releaseDiamond(uint _diamondId) external nonReentrant onlyVaultOwner{
+    function releaseDiamond(uint _diamondId) external onlyVaultOwner{
         require(_diamondId < diamondIds.current(), "Invalid diamondId");
         diamondHands memory diamondHandOrder = getDiamondHand(_diamondId);
         require(diamondHandOrder.status == diamondStatus.Holding, "Asset no longer held");
@@ -361,7 +366,7 @@ contract DiamondVault is Initializable, ReentrancyGuard, ERC721Holder, ERC1155Ho
     * @notice Use emergency break to forcibly unlock (needs to pay what was specified by vaultOwner upon locking the asset)
     * @param _diamondId Corresponding ID for the diamond-hand order 
     */
-    function breakUnlock(uint _diamondId) payable external nonReentrant onlyVaultOwner{
+    function breakUnlock(uint _diamondId) payable external onlyVaultOwner{
         require(_diamondId < diamondIds.current(), "Invalid diamondId");
         diamondHands memory diamondHandOrder = getDiamondHand(_diamondId);
         require(diamondHandOrder.status == diamondStatus.Holding, "Asset no longer held");
@@ -405,7 +410,7 @@ contract DiamondVault is Initializable, ReentrancyGuard, ERC721Holder, ERC1155Ho
     /// @notice withdraw an ERC721 token (not currently diamond-handing) from this contract
     /// @param _contractAddress the address of the NFT you are withdrawing
     /// @param _tokenId the ID of the NFT you are withdrawing
-    function withdrawERC721(address _contractAddress, uint256 _tokenId) external nonReentrant onlyVaultOwner {
+    function withdrawERC721(address _contractAddress, uint256 _tokenId) external onlyVaultOwner {
         require(!currentlyDiamondHanding[keccak256(abi.encodePacked(_contractAddress, _tokenId))], "Currently diamond-handing");
         ERC721Interface(_contractAddress).safeTransferFrom(address(this), msg.sender, _tokenId, "");
         emit WithdrawnERC721(_contractAddress, _tokenId);
@@ -414,27 +419,30 @@ contract DiamondVault is Initializable, ReentrancyGuard, ERC721Holder, ERC1155Ho
     /// @notice withdraw ERC1155 tokens (not currently diamond-handing) from this contract
     /// @param _contractAddress the address of the NFT you are withdrawing
     /// @param _tokenId the ID of the NFT you are withdrawing
-    function withdrawERC1155(address _contractAddress, uint256 _tokenId) external nonReentrant onlyVaultOwner{
+    function withdrawERC1155(address _contractAddress, uint256 _tokenId) external onlyVaultOwner{
         require(ERC1155Interface(_contractAddress).balanceOf(address(this), _tokenId) > currentlyDiamondHandingQuantities[keccak256(abi.encodePacked(_contractAddress, _tokenId))], "Currently diamond-handing");
-        ERC1155Interface(_contractAddress).safeTransferFrom(address(this), msg.sender, _tokenId, ERC1155Interface(_contractAddress).balanceOf(address(this), _tokenId) - currentlyDiamondHandingQuantities[keccak256(abi.encodePacked(_contractAddress, _tokenId))], "");
-        emit WithdrawnERC1155(_contractAddress, _tokenId);
+        uint256 withdrawAmount = ERC1155Interface(_contractAddress).balanceOf(address(this), _tokenId) - currentlyDiamondHandingQuantities[keccak256(abi.encodePacked(_contractAddress, _tokenId))];
+        ERC1155Interface(_contractAddress).safeTransferFrom(address(this), msg.sender, _tokenId, withdrawAmount, "");
+        emit WithdrawnERC1155(_contractAddress, _tokenId, withdrawAmount);
     }
 
     /// @notice withdraw ERC20 (not currently diamond-handing) from this contract
-    function withdrawERC20(address _contractAddress) external nonReentrant onlyVaultOwner{
+    function withdrawERC20(address _contractAddress) external onlyVaultOwner{
         require(IERC20(_contractAddress).balanceOf(address(this)) > currentlyDiamondHandingQuantities[keccak256(abi.encodePacked(_contractAddress))], "No excess ERC20 to withdraw");
-        IERC20(_contractAddress).safeTransfer(msg.sender, IERC20(_contractAddress).balanceOf(address(this)) - currentlyDiamondHandingQuantities[keccak256(abi.encodePacked(_contractAddress))]);
+        uint256 withdrawAmount = IERC20(_contractAddress).balanceOf(address(this)) - currentlyDiamondHandingQuantities[keccak256(abi.encodePacked(_contractAddress))]; 
+        IERC20(_contractAddress).safeTransfer(msg.sender, withdrawAmount);
 
-        emit WithdrawnERC20(_contractAddress);
+        emit WithdrawnERC20(_contractAddress, withdrawAmount);
     }
 
     /// @notice withdraw ETH (not currently diamond-handing) from this contract
-    function withdrawETH() external nonReentrant onlyVaultOwner{
+    function withdrawETH() external onlyVaultOwner{
         require(address(this).balance > currentlyDiamondHandingQuantities[keccak256(abi.encodePacked(assetType.ETH))], "No excess ETH to withdraw");
-        (bool success, ) = msg.sender.call{value: address(this).balance - currentlyDiamondHandingQuantities[keccak256(abi.encodePacked(assetType.ETH))]}("");
+        uint256 withdrawAmount = address(this).balance - currentlyDiamondHandingQuantities[keccak256(abi.encodePacked(assetType.ETH))];
+        (bool success, ) = msg.sender.call{value: withdrawAmount}("");
         require(success, "ETH withdrawal failed");
 
-        emit WithdrawnETH();
+        emit WithdrawnETH(withdrawAmount);
     }
 
     receive() external payable {
@@ -444,7 +452,7 @@ contract DiamondVault is Initializable, ReentrancyGuard, ERC721Holder, ERC1155Ho
     /** GETTING INFORMATION FROM FACTORY **/
 
     function getPrice() internal view returns(uint256) {
-        return IFactory(factoryContractAddress).PRICE();
+        return IFactory(factoryContractAddress).price();
     }
     function getMinBreakPrice() internal view returns(uint256) {
         return IFactory(factoryContractAddress).minBreakPrice();

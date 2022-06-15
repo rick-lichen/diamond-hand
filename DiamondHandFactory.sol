@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.2;
+pragma solidity 0.8.14;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
@@ -18,23 +18,28 @@ contract DiamondHandFactory is Ownable {
     /// @dev Mapping of vault number to vault contract address
     mapping(uint256 => address) vaults;
 
-    /// @dev Mapping of user's wallet to vault number
-    mapping(address => uint256) userToVault;
+    /// @dev Mapping of user's wallet to array of vault numbers they own
+    mapping(address => uint256[]) userToVaultNumbers;
 
     /// @dev the DiamondVault logic contract
-    address public immutable logic;
-
-    address public DIAMONDPASS; //Address of DiamondPass NFT. Holders can create Diamond-Hands for free
-    uint256 public PRICE = 0.01 ether;
+    address public immutable LOGIC;
+    address public immutable DIAMONDPASS; //Address of DiamondPass NFT. Holders can create Diamond-Hands for free
+    uint256 public price = 0.01 ether;
     uint256 public minBreakPrice = 0.1 ether;   //Minimum emergency unlock price
     mapping (bytes32 => bool) isDiamondSpecial;    //Mapping an NFT project's contract address to whether or not they are on the diamondSpecial. Can be used to reward top communities with free Diamond-Hand usage
 
-    event DiamondVaultCreated(address indexed vaultAddress, uint256 indexed vaultCount);
-    event ReceivedPayment(address indexed sender);
+    event DiamondVaultCreated(address indexed vaultAddress, uint256 indexed vaultCount, address indexed vaultOwner);
+    event ReceivedPayment(address indexed sender, uint256 amount);
+    event DiamondSpecialUpdated(address[] indexed contractAddresses, uint256[] tokenIds, bool isOnList);
+    event PriceUpdated(uint256 newPrice);
+    event MinBreakPriceUpdated(uint256 newPrice);
 
-    constructor() {
+
+    constructor(address _diamondPass) {
         //Deploys a new DiamondVault contract and sets it as the immutable implementation for proxies
-        logic = address(new DiamondVault());
+        LOGIC = address(new DiamondVault());
+        //Sets DIAMONDPASS NFT address
+        DIAMONDPASS = _diamondPass;
     }
 
     /**
@@ -42,35 +47,43 @@ contract DiamondHandFactory is Ownable {
     * @return address of the created DiamondVault
     */
     function createDiamondVault() external returns(address) {
-        address payable vaultAddress = payable(Clones.clone(logic));
+        address payable vaultAddress = payable(Clones.clone(LOGIC));
         DiamondVault(vaultAddress).initialize(vaultCount.current(), msg.sender, address(this));
 
-        emit DiamondVaultCreated(vaultAddress, vaultCount.current());
+        emit DiamondVaultCreated(vaultAddress, vaultCount.current(), msg.sender);
         
         vaults[vaultCount.current()] = vaultAddress;
-        userToVault[msg.sender] = vaultCount.current();
+        userToVaultNumbers[msg.sender].push(vaultCount.current());
         vaultCount.increment();
         return vaultAddress;
     }
 
     receive() external payable {
-        emit ReceivedPayment(msg.sender);
+        emit ReceivedPayment(msg.sender, msg.value);
     }
 
     /**
-    * @dev Fetch user's vault address
+    * @dev Fetch user's vault addresses
     * @param _walletAddress Address of user
-    * @return address of user's vault
+    * @return address Array of addresses for user's vaults
     */
-    function getVaultAddress(address _walletAddress) public view returns(address) {
-        return vaults[userToVault[_walletAddress]];
+    function getVaultAddresses(address _walletAddress) external view returns(address[] memory) {
+        require(userToVaultNumbers[_walletAddress].length > 0, "User has no vaults");
+        uint256[] memory vaultNumbers = userToVaultNumbers[_walletAddress];
+        address[] memory vaultAddresses = new address[](vaultNumbers.length);
+        for(uint256 i; i < vaultNumbers.length; i++){
+            vaultAddresses[i] = (vaults[vaultNumbers[i]]);
+        }
+
+        return vaultAddresses;
     }
+
 
     /**
     * @dev Fetch total number of vaults
     * @return uint256 number of vaults
     */
-    function getVaultCount() public view returns(uint256) {
+    function getVaultCount() external view returns(uint256) {
         return vaultCount.current();
     }
 
@@ -103,14 +116,7 @@ contract DiamondHandFactory is Ownable {
         for (i = 0; i < _contractAddresses.length; i ++){
             isDiamondSpecial[keccak256(abi.encodePacked(_contractAddresses[i], _tokenIds[i]))] = isOnList;
         }
-    }
-
-     /**
-    * @dev Set DIAMONDPASS NFT Address
-    * @param _newAddress New address to be set
-    */
-    function setDiamondPassAddress(address _newAddress) external onlyOwner {
-        DIAMONDPASS = _newAddress;
+        emit DiamondSpecialUpdated(_contractAddresses, _tokenIds, isOnList);
     }
 
     /**
@@ -118,7 +124,8 @@ contract DiamondHandFactory is Ownable {
     * @param _price of creating Diamond-Hand
     */
     function setPrice(uint256 _price) external onlyOwner {
-        PRICE = _price ;
+        price = _price ;
+        emit PriceUpdated(_price);
     }
 
     /**
@@ -127,6 +134,7 @@ contract DiamondHandFactory is Ownable {
     */
     function setMinBreakPrice(uint256 _minPrice) external onlyOwner {
         minBreakPrice = _minPrice ;
+        emit MinBreakPriceUpdated(_minPrice);
     }
 
 }
